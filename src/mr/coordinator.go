@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync"
 )
 
 var (
@@ -13,8 +14,31 @@ var (
 )
 
 type Coordinator struct {
-	// Your definitions here.
+	mapTasks         []MapTask
+	reduceTasks      []ReduceTask
+	mapProcessing    map[string]MapTask
+	reduceProcessing map[string]ReduceTask
+	mapTasksDone     bool
+	reduceTasksDone  bool
+	reducers         int
+	mapTasksOutput   [][]string // location of map task ouput file
+	redueTasksOutput []string   // reduce task output
+	sync.Mutex
+}
 
+func (c *Coordinator) MapTaskDone(task MapTaskOut, replay *bool) error {
+	// TODO: mark map task done
+	return nil
+}
+
+func (c *Coordinator) ReduceTaskDone(task ReduceTaskOut, replay *bool) error {
+	// TODO: mark map task done
+	return nil
+}
+
+func (c *Coordinator) GetTask(workerId string, task *Task) error {
+	// TODO: return task to the worker
+	return nil
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -59,13 +83,6 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// Your code here.
 	// TODO: what should coordinator hold
-	// map tasks
-	// reduce tasks
-	// tracker
-	// number of reduces
-
-	// map task
-	// [{fileName, offset, lines, r}]
 
 	c.server()
 	return &c

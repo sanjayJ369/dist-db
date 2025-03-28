@@ -1,6 +1,8 @@
 package mr
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -8,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -68,6 +71,77 @@ func TestCreateReadChunks(t *testing.T) {
 		}
 		fmt.Println("completed file: ", file)
 	}
+}
+
+func TestMapTaskWork(t *testing.T) {
+	// create map tasks
+	filename := "./testdata/pg-metamorphosis.txt"
+	tasks := []MapTask{}
+	for _, chunk := range createChunks(filename) {
+		task := MapTask{
+			Id:      uuid.NewString(),
+			Chunk:   chunk,
+			nReduce: 1,
+			out:     MapTaskOut{},
+		}
+		tasks = append(tasks, task)
+	}
+	mapf := func(filename string, contents string) []KeyValue {
+		// function to detect word separators.
+		ff := func(r rune) bool { return !unicode.IsLetter(r) }
+
+		// split contents into an array of words.
+		words := strings.FieldsFunc(contents, ff)
+
+		kva := []KeyValue{}
+		for _, w := range words {
+			kv := KeyValue{w, "1"}
+			kva = append(kva, kv)
+		}
+		return kva
+	}
+
+	mapRes := []KeyValue{}
+	for _, task := range tasks {
+		task.Work(mapf)
+		assert.Equal(t, len(task.out.Files), 1)
+		data, err := os.ReadFile(task.out.Files[0])
+		if err != nil {
+			t.Errorf("\nreading map task output: %s", err)
+		}
+		scanner := bufio.NewScanner(bytes.NewBuffer(data))
+		for scanner.Scan() {
+			kv := KeyValue{}
+			line := scanner.Text()
+			splitLine := strings.Split(line, " ")
+			if len(splitLine) < 2 {
+				continue
+			}
+			kv.Key = splitLine[0]
+			kv.Value = splitLine[1]
+			mapRes = append(mapRes, kv)
+		}
+	}
+
+	want, err := os.ReadFile("./testdata/intermediate-0")
+	if err != nil {
+		t.Error(err)
+	}
+	want = append(want, '\n')
+	wantRes := []KeyValue{}
+	scanner := bufio.NewScanner(bytes.NewBuffer(want))
+	for scanner.Scan() {
+		kv := KeyValue{}
+		line := scanner.Text()
+		splitLine := strings.Split(line, " ")
+		if len(splitLine) < 2 {
+			continue
+		}
+		kv.Key = splitLine[0]
+		kv.Value = splitLine[1]
+		wantRes = append(wantRes, kv)
+	}
+	assert.ElementsMatch(t, wantRes, mapRes)
 }
 
 // createFile creates a file with random strings in a line of given size

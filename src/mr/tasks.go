@@ -3,12 +3,82 @@ package mr
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"log"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/google/uuid"
 )
+
+type Task interface {
+	Work()
+}
+
+type MapTask struct {
+	Id      string     // task ID
+	nReduce int        // number of reducers
+	out     MapTaskOut // result
+	Chunk
+}
+
+type MapTaskOut struct {
+	Id    string
+	Files []string
+}
+
+func (m *MapTask) Work(mapf func(string, string) []KeyValue) {
+	lines := readChunk(m.Chunk)
+	m.out = MapTaskOut{}
+	m.out.Id = m.Id
+	var intermediateKV []KeyValue
+	for _, line := range lines {
+		kvs := mapf(m.Filename, line)
+		intermediateKV = append(intermediateKV, kvs...)
+	}
+
+	// create NReduce files to store output of map func
+	dirName := uuid.NewString()
+	err := os.Mkdir(dirName, 0755)
+	if err != nil {
+		log.Fatalln("error creating directory:", err)
+	}
+
+	outfiles := []*os.File{}
+	for i := range m.nReduce {
+		filename := "mr-out-" + strconv.Itoa(i)
+		f, err := os.Create(dirName + "/" + filename)
+		m.out.Files = append(m.out.Files, dirName+"/"+filename)
+		if err != nil {
+			log.Fatalln("error creating file:", err)
+		}
+		defer f.Close()
+		outfiles = append(outfiles, f)
+	}
+
+	for _, kv := range intermediateKV {
+		f := ihash(kv.Key) % m.nReduce
+		fmt.Fprintf(outfiles[f], "%v %v\n", kv.Key, kv.Value)
+	}
+}
+
+type ReduceTask struct {
+	Id         string
+	InputFiles []string
+	out        ReduceTaskOut
+}
+
+type ReduceTaskOut struct {
+	Id    string
+	Files []string
+}
+
+func (r *ReduceTask) Work(redf func(string, []string) string) {
+	// TODO: perform reduce task
+}
 
 type Chunk struct {
 	Filename string
