@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"runtime/pprof"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +21,7 @@ func TestCreateReadChunks(t *testing.T) {
 	// create fileCount files with random size
 	// and check if createChunks and readChunks
 	// will correctly read the file
-	f, err := os.Create("./debug/cpu.prof")
+	f, err := os.Create("./testing/cpu.prof")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +87,7 @@ func TestMapTaskWork(t *testing.T) {
 		}
 		tasks = append(tasks, task)
 	}
+
 	mapf := func(filename string, contents string) []KeyValue {
 		// function to detect word separators.
 		ff := func(r rune) bool { return !unicode.IsLetter(r) }
@@ -141,7 +143,19 @@ func TestMapTaskWork(t *testing.T) {
 		kv.Value = splitLine[1]
 		wantRes = append(wantRes, kv)
 	}
-	assert.ElementsMatch(t, wantRes, mapRes)
+
+	if !assert.ElementsMatch(t, wantRes, mapRes) {
+		sort.Slice(wantRes, func(i, j int) bool {
+			cmp := strings.Compare(wantRes[i].Key, wantRes[j].Key)
+			return cmp == -1
+		})
+		sort.Slice(mapRes, func(i, j int) bool {
+			cmp := strings.Compare(mapRes[i].Key, mapRes[j].Key)
+			return cmp == -1
+		})
+		writeKVPairsToFile(t, "./testdata/wantRes.txt", wantRes)
+		writeKVPairsToFile(t, "./testdata/mapRes.txt", mapRes)
+	}
 }
 
 // createFile creates a file with random strings in a line of given size
@@ -183,4 +197,17 @@ func createRandomString(size int32) string {
 		sb.WriteByte(letters[idx])
 	}
 	return sb.String()
+}
+
+func writeKVPairsToFile(t testing.TB, file string, res []KeyValue) {
+	t.Helper()
+	File, err := os.Create(file)
+	if err != nil {
+		t.Errorf("failed to create file: %s", err)
+	} else {
+		defer File.Close()
+		for _, kv := range res {
+			File.WriteString(fmt.Sprintf("%s %s\n", kv.Key, kv.Value))
+		}
+	}
 }

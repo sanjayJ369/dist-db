@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"6.5840/utils"
 	"github.com/google/uuid"
 )
 
@@ -34,12 +35,20 @@ func (m *MapTask) Work(mapf func(string, string) []KeyValue) {
 	lines := readChunk(m.Chunk)
 	m.out = MapTaskOut{}
 	m.out.Id = m.Id
+	sortedOutputLines := make([]utils.StringHeap, m.nReduce)
+
 	var intermediateKV []KeyValue
 	for _, line := range lines {
 		kvs := mapf(m.Filename, line)
 		intermediateKV = append(intermediateKV, kvs...)
+		for _, kv := range kvs {
+			i := ihash(kv.Key) % m.nReduce
+			line := fmt.Sprintf("%v %v\n", kv.Key, kv.Value)
+			sortedOutputLines[i].PushString(line)
+		}
 	}
 
+	fmt.Println(len(intermediateKV))
 	// create NReduce files to store output of map func
 	dirName := uuid.NewString()
 	err := os.Mkdir(dirName, 0755)
@@ -47,7 +56,8 @@ func (m *MapTask) Work(mapf func(string, string) []KeyValue) {
 		log.Fatalln("error creating directory:", err)
 	}
 
-	outfiles := []*os.File{}
+	outFiles := []*os.File{}
+
 	for i := range m.nReduce {
 		filename := "mr-out-" + strconv.Itoa(i)
 		f, err := os.Create(dirName + "/" + filename)
@@ -56,12 +66,15 @@ func (m *MapTask) Work(mapf func(string, string) []KeyValue) {
 			log.Fatalln("error creating file:", err)
 		}
 		defer f.Close()
-		outfiles = append(outfiles, f)
+		outFiles = append(outFiles, f)
 	}
 
-	for _, kv := range intermediateKV {
-		f := ihash(kv.Key) % m.nReduce
-		fmt.Fprintf(outfiles[f], "%v %v\n", kv.Key, kv.Value)
+	for i, lines := range sortedOutputLines {
+		fmt.Println(lines.Len())
+		n := lines.Len()
+		for j := 0; j < n; j++ {
+			fmt.Fprint(outFiles[i], lines.PopString())
+		}
 	}
 }
 

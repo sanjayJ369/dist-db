@@ -31,7 +31,7 @@ func (c *Coordinator) MapTaskDone(task MapTaskOut, replay *bool) error {
 	return nil
 }
 
-func (c *Coordinator) ReduceTaskDone(task ReduceTaskOut, replay *bool) error {
+func (c *Coordinator) ReduceTaskDone(task ReduceTask, replay *bool) error {
 	// TODO: mark map task done
 	return nil
 }
