@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"6.5840/utils"
+	"github.com/emirpasic/gods/queues/priorityqueue"
 	"github.com/google/uuid"
 )
 
@@ -61,7 +62,7 @@ func (m *MapTask) Work(mapf func(string, string) []KeyValue) {
 	for i := range m.nReduce {
 		filename := "mr-out-" + strconv.Itoa(i)
 		f, err := os.Create(dirName + "/" + filename)
-		m.out.Files = append(m.out.Files, dirName+"/"+filename)
+		m.out.Files = append(m.out.Files, f.Name())
 		if err != nil {
 			log.Fatalln("error creating file:", err)
 		}
@@ -81,16 +82,70 @@ func (m *MapTask) Work(mapf func(string, string) []KeyValue) {
 type ReduceTask struct {
 	Id         string
 	InputFiles []string
-	out        ReduceTaskOut
-}
-
-type ReduceTaskOut struct {
-	Id    string
-	Files []string
+	out        string
 }
 
 func (r *ReduceTask) Work(redf func(string, []string) string) {
-	// TODO: perform reduce task
+	scanners := []*bufio.Scanner{}
+	r.out = uuid.NewString()
+	output, err := os.Create(r.out)
+	if err != nil {
+		log.Fatalln("creating reduce output file: ", err)
+	}
+	defer output.Close()
+
+	// create a priorty queue
+	type Pair struct {
+		Str string
+		Num int
+	}
+	queue := priorityqueue.NewWith(func(a, b interface{}) int {
+		return strings.Compare(a.(Pair).Str, b.(Pair).Str)
+	})
+	currKey := ""
+	currVal := []string{}
+	completed := 0
+	for i, file := range r.InputFiles {
+		fp, err := os.OpenFile(file, os.O_RDONLY, 0655)
+		if err != nil {
+			log.Fatalln("reading map file: ", err)
+		}
+		scanner := bufio.NewScanner(fp)
+		if !scanner.Scan() {
+			completed += 1
+		}
+		if completed == len(r.InputFiles) {
+			break
+		}
+		queue.Enqueue(Pair{scanner.Text(), i})
+		scanners = append(scanners, scanner)
+		defer fp.Close()
+	}
+
+	for !queue.Empty() {
+		item, _ := queue.Dequeue()
+		line := item.(Pair).Str
+		idx := item.(Pair).Num
+
+		scanners[idx].Scan()
+		queue.Enqueue(Pair{scanners[idx].Text(), idx})
+
+		kv := KvFromLine(line)
+		if kv == nil {
+			continue
+		}
+		if currKey == "" {
+			currKey = kv.Key
+			currVal = []string{kv.Value}
+		} else if kv.Key == currKey {
+			currVal = append(currVal, kv.Value)
+		} else {
+			res := redf(currKey, currVal)
+			fmt.Fprintf(output, "%v %v\n", currKey, res)
+			currKey = kv.Key
+			currVal = []string{kv.Value}
+		}
+	}
 }
 
 type Chunk struct {
@@ -202,4 +257,15 @@ func createChunks(filename string) []Chunk {
 		tasks = append(tasks, task)
 	}
 	return tasks
+}
+
+func KvFromLine(line string) *KeyValue {
+	kv := KeyValue{}
+	splitLine := strings.Split(line, " ")
+	if len(splitLine) < 2 {
+		return nil
+	}
+	kv.Key = splitLine[0]
+	kv.Value = splitLine[1]
+	return &kv
 }

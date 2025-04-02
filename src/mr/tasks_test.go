@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime/pprof"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +156,66 @@ func TestMapTaskWork(t *testing.T) {
 		})
 		writeKVPairsToFile(t, "./testdata/wantRes.txt", wantRes)
 		writeKVPairsToFile(t, "./testdata/mapRes.txt", mapRes)
+	}
+}
+
+func TestReduceTaskWork(t *testing.T) {
+
+	filename := "./testdata/pg-metamorphosis.txt"
+	tasks := []MapTask{}
+	for _, chunk := range createChunks(filename) {
+		task := MapTask{
+			Id:      uuid.NewString(),
+			Chunk:   chunk,
+			nReduce: 1,
+			out:     MapTaskOut{},
+		}
+		tasks = append(tasks, task)
+	}
+
+	mapf := func(filename string, contents string) []KeyValue {
+		ff := func(r rune) bool { return !unicode.IsLetter(r) }
+		words := strings.FieldsFunc(contents, ff)
+		kva := []KeyValue{}
+		for _, w := range words {
+			kv := KeyValue{w, "1"}
+			kva = append(kva, kv)
+		}
+		return kva
+	}
+
+	intermediateFiles := []string{}
+	for _, task := range tasks {
+		task.Work(mapf)
+		assert.Equal(t, len(task.out.Files), 1)
+		intermediateFiles = append(intermediateFiles, task.out.Files[0])
+	}
+
+	reduceTask := ReduceTask{
+		Id:         uuid.NewString(),
+		InputFiles: intermediateFiles,
+	}
+
+	reducef := func(key string, values []string) string {
+		return strconv.Itoa(len(values))
+	}
+
+	reduceTask.Work(reducef)
+
+	got, err := os.ReadFile(reduceTask.out)
+	if err != nil {
+		t.Fatalf("failed to read reduce task output: %s", err)
+	}
+
+	want, err := os.ReadFile("./testing/mr-out-0")
+	if err != nil {
+		t.Fatalf("failed to read expected output file: %s", err)
+	}
+
+	if !assert.Equal(t, string(want), string(got)) {
+		os.WriteFile("./testdata/reduce-got.txt", got, 0644)
+		os.WriteFile("./testdata/reduce-want.txt", want, 0644)
+		t.Errorf("reduce task output does not match expected result")
 	}
 }
 
