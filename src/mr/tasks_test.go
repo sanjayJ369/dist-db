@@ -22,7 +22,7 @@ func TestCreateReadChunks(t *testing.T) {
 	// create fileCount files with random size
 	// and check if createChunks and readChunks
 	// will correctly read the file
-	f, err := os.Create("./testing/cpu.prof")
+	f, err := os.Create("./testdata/cpu.prof")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,6 @@ func TestCreateReadChunks(t *testing.T) {
 		chunks := createChunks(file)
 		got := []byte{}
 		for _, chunk := range chunks {
-			fmt.Println(chunk)
 			lines := readChunk(chunk)
 			for _, line := range lines {
 				got = append(got, []byte(line)...)
@@ -83,8 +82,8 @@ func TestMapTaskWork(t *testing.T) {
 		task := MapTask{
 			Id:      uuid.NewString(),
 			Chunk:   chunk,
-			nReduce: 1,
-			out:     MapTaskOut{},
+			NReduce: 1,
+			Out:     MapTaskOut{},
 		}
 		tasks = append(tasks, task)
 	}
@@ -106,9 +105,10 @@ func TestMapTaskWork(t *testing.T) {
 
 	mapRes := []KeyValue{}
 	for _, task := range tasks {
-		task.Work(mapf)
-		assert.Equal(t, len(task.out.Files), 1)
-		data, err := os.ReadFile(task.out.Files[0])
+		task.MapF = mapf
+		task.Work()
+		assert.Equal(t, len(task.Out.Files), 1)
+		data, err := os.ReadFile(task.Out.Files[0])
 		if err != nil {
 			t.Errorf("\nreading map task output: %s", err)
 		}
@@ -167,8 +167,8 @@ func TestReduceTaskWork(t *testing.T) {
 		task := MapTask{
 			Id:      uuid.NewString(),
 			Chunk:   chunk,
-			nReduce: 1,
-			out:     MapTaskOut{},
+			NReduce: 1,
+			Out:     MapTaskOut{},
 		}
 		tasks = append(tasks, task)
 	}
@@ -186,9 +186,10 @@ func TestReduceTaskWork(t *testing.T) {
 
 	intermediateFiles := []string{}
 	for _, task := range tasks {
-		task.Work(mapf)
-		assert.Equal(t, len(task.out.Files), 1)
-		intermediateFiles = append(intermediateFiles, task.out.Files[0])
+		task.MapF = mapf
+		task.Work()
+		assert.Equal(t, len(task.Out.Files), 1)
+		intermediateFiles = append(intermediateFiles, task.Out.Files[0])
 	}
 
 	reduceTask := ReduceTask{
@@ -200,14 +201,15 @@ func TestReduceTaskWork(t *testing.T) {
 		return strconv.Itoa(len(values))
 	}
 
-	reduceTask.Work(reducef)
+	reduceTask.RedF = reducef
+	reduceTask.Work()
 
-	got, err := os.ReadFile(reduceTask.out)
+	got, err := os.ReadFile(reduceTask.Out)
 	if err != nil {
 		t.Fatalf("failed to read reduce task output: %s", err)
 	}
 
-	want, err := os.ReadFile("./testing/mr-out-0")
+	want, err := os.ReadFile("./testdata/mr-out-0")
 	if err != nil {
 		t.Fatalf("failed to read expected output file: %s", err)
 	}

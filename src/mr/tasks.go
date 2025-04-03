@@ -22,8 +22,9 @@ type Task interface {
 
 type MapTask struct {
 	Id      string     // task ID
-	nReduce int        // number of reducers
-	out     MapTaskOut // result
+	NReduce int        // number of reducers
+	Out     MapTaskOut // result
+	MapF    func(string, string) []KeyValue
 	Chunk
 }
 
@@ -32,24 +33,23 @@ type MapTaskOut struct {
 	Files []string
 }
 
-func (m *MapTask) Work(mapf func(string, string) []KeyValue) {
+func (m *MapTask) Work() {
 	lines := readChunk(m.Chunk)
-	m.out = MapTaskOut{}
-	m.out.Id = m.Id
-	sortedOutputLines := make([]utils.StringHeap, m.nReduce)
+	m.Out = MapTaskOut{}
+	m.Out.Id = m.Id
+	sortedOutputLines := make([]utils.StringHeap, m.NReduce)
 
 	var intermediateKV []KeyValue
 	for _, line := range lines {
-		kvs := mapf(m.Filename, line)
+		kvs := m.MapF(m.Filename, line)
 		intermediateKV = append(intermediateKV, kvs...)
 		for _, kv := range kvs {
-			i := ihash(kv.Key) % m.nReduce
+			i := ihash(kv.Key) % m.NReduce
 			line := fmt.Sprintf("%v %v\n", kv.Key, kv.Value)
 			sortedOutputLines[i].PushString(line)
 		}
 	}
 
-	fmt.Println(len(intermediateKV))
 	// create NReduce files to store output of map func
 	dirName := uuid.NewString()
 	err := os.Mkdir(dirName, 0755)
@@ -59,10 +59,10 @@ func (m *MapTask) Work(mapf func(string, string) []KeyValue) {
 
 	outFiles := []*os.File{}
 
-	for i := range m.nReduce {
+	for i := range m.NReduce {
 		filename := "mr-out-" + strconv.Itoa(i)
 		f, err := os.Create(dirName + "/" + filename)
-		m.out.Files = append(m.out.Files, f.Name())
+		m.Out.Files = append(m.Out.Files, f.Name())
 		if err != nil {
 			log.Fatalln("error creating file:", err)
 		}
@@ -71,7 +71,6 @@ func (m *MapTask) Work(mapf func(string, string) []KeyValue) {
 	}
 
 	for i, lines := range sortedOutputLines {
-		fmt.Println(lines.Len())
 		n := lines.Len()
 		for j := 0; j < n; j++ {
 			fmt.Fprint(outFiles[i], lines.PopString())
@@ -82,13 +81,14 @@ func (m *MapTask) Work(mapf func(string, string) []KeyValue) {
 type ReduceTask struct {
 	Id         string
 	InputFiles []string
-	out        string
+	Out        string
+	RedF       func(string, []string) string
 }
 
-func (r *ReduceTask) Work(redf func(string, []string) string) {
+func (r *ReduceTask) Work() {
 	scanners := []*bufio.Scanner{}
-	r.out = uuid.NewString()
-	output, err := os.Create(r.out)
+	r.Out = uuid.NewString()
+	output, err := os.Create(r.Out)
 	if err != nil {
 		log.Fatalln("creating reduce output file: ", err)
 	}
@@ -128,7 +128,9 @@ func (r *ReduceTask) Work(redf func(string, []string) string) {
 		idx := item.(Pair).Num
 
 		scanners[idx].Scan()
-		queue.Enqueue(Pair{scanners[idx].Text(), idx})
+		if scanners[idx].Text() != "" {
+			queue.Enqueue(Pair{scanners[idx].Text(), idx})
+		}
 
 		kv := KvFromLine(line)
 		if kv == nil {
@@ -140,11 +142,16 @@ func (r *ReduceTask) Work(redf func(string, []string) string) {
 		} else if kv.Key == currKey {
 			currVal = append(currVal, kv.Value)
 		} else {
-			res := redf(currKey, currVal)
+			res := r.RedF(currKey, currVal)
 			fmt.Fprintf(output, "%v %v\n", currKey, res)
 			currKey = kv.Key
 			currVal = []string{kv.Value}
 		}
+	}
+
+	if currKey != "" {
+		res := r.RedF(currKey, currVal)
+		fmt.Fprintf(output, "%v %v\n", currKey, res)
 	}
 }
 
