@@ -1,10 +1,13 @@
 package mr
 
 import (
+	"encoding/gob"
 	"fmt"
 	"hash/fnv"
 	"log"
 	"net/rpc"
+
+	"6.5840/utils/logger"
 )
 
 // Map functions return a slice of KeyValue.
@@ -24,10 +27,39 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-	// TODO: implement worker
-
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
+	gob.Register(&MapTask{})
+	gob.Register(&ReduceTask{})
+	slogger = logger.GetLogger("worker").Sugar()
+	for {
+		var task Task
+		var ok bool
+		if !call("Coordinator.GetTask", "", &task) {
+			slogger.Fatalln("error getting task")
+		}
+		switch v := task.(type) {
+		case *MapTask:
+			v.MapF = mapf
+			v.Work()
+			slogger.Infof("got map task: %d", v.Id)
+			if !call("Coordinator.MapTaskDone", v.Out, &ok) {
+				slogger.Warnf("failed to notify map task completion for task %d", v.Id)
+			}
+		case *ReduceTask:
+			v.RedF = reducef
+			v.Work()
+			slogger.Infof("got reduce task: %d", v.Id)
+			if !call("Coordinator.ReduceTaskDone", v, &ok) {
+				slogger.Warnf("failed to notify reduce task completion for task %d", v.Id)
+			}
+		default:
+			slogger.Warnf("received invalid task type: %v", task)
+		}
+		if !ok {
+			slogger.Warn("unable to mark task done")
+		}
+	}
 
 }
 
