@@ -2,6 +2,9 @@ package mr
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -111,6 +114,52 @@ func TestGetTask(t *testing.T) {
 		}
 		assert.NotContains(t, c.reduceProcessing, taskId)
 		assert.Contains(t, currTasks, taskId)
+	})
+}
+
+func TestCleanUp(t *testing.T) {
+	t.Run("CleanUp removes map task output directories and renames reduce task output files", func(t *testing.T) {
+		// Setup
+		c := createStubCoordinator(2, 0)
+		tempDir := t.TempDir()
+		uuidDir := filepath.Join(tempDir, uuid.NewString())
+
+		// Create mock map task output directories
+		mapOutputDirs := []string{}
+		for i := 0; i < 3; i++ {
+			dir := filepath.Join(uuidDir, fmt.Sprintf("map-output-%d", i))
+			err := os.MkdirAll(dir, 0755)
+			assert.NoError(t, err)
+			c.mapTasksOutput = append(c.mapTasksOutput, []string{filepath.Join(dir, fmt.Sprintf("mr-out-%d", i))})
+			mapOutputDirs = append(mapOutputDirs, dir)
+		}
+
+		// Create mock reduce task output files
+		reduceOutputFiles := []string{}
+		for i := 0; i < 2; i++ {
+			file := filepath.Join(uuidDir, fmt.Sprintf("reduce-output-%d", i))
+			_, err := os.Create(file)
+			assert.NoError(t, err)
+			c.redueTasksOutput = append(c.redueTasksOutput, file)
+			reduceOutputFiles = append(reduceOutputFiles, file)
+		}
+
+		// Call CleanUp
+		err := c.CleanUp()
+		assert.NoError(t, err)
+
+		// Verify map task output directories are removed
+		for _, dir := range mapOutputDirs {
+			_, err := os.Stat(dir)
+			assert.True(t, os.IsNotExist(err), "Expected directory to be removed: %s", dir)
+		}
+
+		// Verify reduce task output files are renamed
+		for i := range reduceOutputFiles {
+			newFile := filepath.Join(uuidDir, OUTPUT_FILE_PREFIX+strconv.Itoa(i))
+			_, err := os.Stat(newFile)
+			assert.NoError(t, err, "Expected file to be renamed: %s", newFile)
+		}
 	})
 }
 

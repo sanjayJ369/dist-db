@@ -4,15 +4,17 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
+
+	"6.5840/utils/logger"
 
 	"github.com/google/uuid"
 )
@@ -31,26 +33,39 @@ type Coordinator struct {
 	mapTasksDone     bool
 	reduceTasksDone  bool
 	nReducers        int
-	mapTasksOutput   [][]string // location of map task ouput file
+	mapTasksOutput   [][]string // location of map task output file
 	redueTasksOutput []string   // reduce task output
 	sync.Mutex
 }
 
+var slogger = logger.GetLogger("coordinator").Sugar()
+
 func (c *Coordinator) CleanUp() error {
-	c.Lock()
-	defer c.Unlock()
+	slogger.Info("Starting cleanup of output files")
+	for _, group := range c.mapTasksOutput {
+		dir := filepath.Dir(group[0])
+		fmt.Printf("Deleting directory: %s\n", dir)
+
+		err := os.RemoveAll(dir)
+		if err != nil {
+			fmt.Printf("Error deleting %s: %v\n", dir, err)
+		}
+	}
 	outfiles := c.redueTasksOutput
 	newfiles := []string{}
 	for i, file := range outfiles {
 		dir := path.Dir(file)
 		newName := OUTPUT_FILE_PREFIX + strconv.Itoa(i)
-		err := os.Rename(file, dir+newName)
-		newfiles = append(newfiles, dir+newName)
+		err := os.Rename(file, filepath.Join(dir, newName))
 		if err != nil {
-			return fmt.Errorf("renameing files: %s", err)
+			slogger.Error("Error renaming file", "file", file, "error", err)
+			return fmt.Errorf("renaming files: %s", err)
 		}
+		newfiles = append(newfiles, dir+newName)
+		slogger.Info("Renamed file", "oldName", file, "newName", dir+newName)
 	}
 	c.redueTasksOutput = newfiles
+	slogger.Info("Cleanup completed successfully")
 	return nil
 }
 
@@ -58,29 +73,33 @@ func (c *Coordinator) MapTaskDone(task MapTaskOut, replay *bool) error {
 	c.Lock()
 	defer c.Unlock()
 
+	slogger.Info("Map task completed", "taskId", task.Id)
 	if _, ok := c.mapProcessing[task.Id]; ok {
 		err := updateReduceTasks(c, task)
 		if err != nil {
+			slogger.Error("Error updating reduce tasks", "taskId", task.Id, "error", err)
 			return fmt.Errorf("updating reduce tasks: %w", err)
 		}
 		c.mapTasksOutput = append(c.mapTasksOutput, task.Files)
 		delete(c.mapProcessing, task.Id)
 		if len(c.mapProcessing) == 0 && len(c.mapTasks) == 0 {
 			c.mapTasksDone = true
+			slogger.Info("All map tasks completed")
 		}
 		*replay = true
 	}
 	return nil
 }
 
-// updateREduceTasks updated coordinator reduce tasks with
-// the new map task results
 func updateReduceTasks(c *Coordinator, task MapTaskOut) error {
+	slogger.Info("Updating reduce tasks with map task output", "taskId", task.Id)
 	if len(task.Files) != c.nReducers {
+		slogger.Error("Mismatch between map files generated and number of reducers", "taskId", task.Id)
 		return errors.New("mismatch between map files generated and number of reducers")
 	}
 	for i, file := range task.Files {
 		c.reduceTasks[i].InputFiles = append(c.reduceTasks[i].InputFiles, file)
+		slogger.Info("Added map output to reduce task", "reduceTaskId", c.reduceTasks[i].Id, "file", file)
 	}
 	return nil
 }
@@ -89,13 +108,17 @@ func (c *Coordinator) ReduceTaskDone(task ReduceTask, replay *bool) error {
 	c.Lock()
 	defer c.Unlock()
 
+	slogger.Info("Reduce task completed", "taskId", task.Id)
 	if _, ok := c.reduceProcessing[task.Id]; ok {
 		c.redueTasksOutput = append(c.redueTasksOutput, task.Out)
 		delete(c.reduceProcessing, task.Id)
 		if len(c.reduceProcessing) == 0 && len(c.reduceTasks) == 0 {
+			slogger.Info("All reduce tasks completed, starting cleanup")
 			c.CleanUp()
+			c.reduceTasksDone = true
 		}
 	}
+	*replay = true
 	return nil
 }
 
@@ -109,11 +132,13 @@ func (c *Coordinator) handleTask(task Task) {
 		if t, ok := c.mapProcessing[v.Id]; ok {
 			delete(c.mapProcessing, v.Id)
 			c.mapTasks = append(c.mapTasks, t)
+			slogger.Warn("Map task retrying", "taskId", v.Id)
 		}
 	case *ReduceTask:
 		if t, ok := c.reduceProcessing[v.Id]; ok {
 			delete(c.reduceProcessing, v.Id)
 			c.reduceTasks = append(c.reduceTasks, t)
+			slogger.Warn("Reduce task retrying", "taskId", v.Id)
 		}
 	}
 }
@@ -122,6 +147,7 @@ func (c *Coordinator) GetTask(workerId string, task *Task) error {
 	c.Lock()
 	defer c.Unlock()
 
+	slogger.Info("Worker requested task", "workerId", workerId)
 	if !c.mapTasksDone {
 		if len(c.mapTasks) != 0 {
 			t := c.mapTasks[0]
@@ -129,8 +155,10 @@ func (c *Coordinator) GetTask(workerId string, task *Task) error {
 			go c.handleTask(&t)
 			c.mapTasks = c.mapTasks[1:]
 			*task = &t
+			slogger.Info("Assigned map task to worker", "workerId", workerId, "taskId", t.Id)
 			return nil
 		}
+		slogger.Warn("No map tasks available for worker", "workerId", workerId)
 		return errors.New(ErrProcessingMapTask)
 	}
 
@@ -141,51 +169,45 @@ func (c *Coordinator) GetTask(workerId string, task *Task) error {
 			go c.handleTask(&t)
 			c.reduceTasks = c.reduceTasks[1:]
 			*task = &t
+			slogger.Info("Assigned reduce task to worker", "workerId", workerId, "taskId", t.Id)
 			return nil
 		}
+		slogger.Warn("No reduce tasks available for worker", "workerId", workerId)
 		return errors.New(ErrProcessingReduceTask)
 	}
 
+	slogger.Info("All tasks completed, no tasks available for worker", "workerId", workerId)
 	return errors.New(MsgCompletedProcessing)
 }
 
-// Your code here -- RPC handlers for the worker to call.
-
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
 func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
+	slogger.Info("Example RPC called", "args", args)
 	reply.Y = args.X + 1
 	return nil
 }
 
-// start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
+	slogger.Info("Starting RPC server")
 	gob.Register(&MapTask{})
 	gob.Register(&ReduceTask{})
 	rpc.Register(c)
 	rpc.HandleHTTP()
-	//l, e := net.Listen("tcp", ":1234")
 	sockname := coordinatorSock()
 	os.Remove(sockname)
 	l, e := net.Listen("unix", sockname)
 	if e != nil {
-		log.Fatal("listen error:", e)
+		slogger.Fatal("Listen error", "error", e)
 	}
 	go http.Serve(l, nil)
+	slogger.Info("RPC server started successfully")
 }
 
-// main/mrcoordinator.go calls Done() periodically to find out
-// if the entire job has finished.
 func (c *Coordinator) Done() bool {
 	return c.reduceTasksDone
 }
 
-// create a Coordinator.
-// main/mrcoordinator.go calls this function.
-// nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	// register types for encoding and decoding
+	slogger.Info("Creating coordinator", "nReduce", nReduce)
 	gob.Register(&MapTask{})
 	gob.Register(&MapTaskOut{})
 	gob.Register(&ReduceTask{})
@@ -203,10 +225,12 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}
 
 	c.server()
+	slogger.Info("Coordinator created successfully")
 	return &c
 }
 
 func createReduceTasks(nReduce int) []ReduceTask {
+	slogger.Info("Creating reduce tasks", "nReduce", nReduce)
 	tasks := []ReduceTask{}
 	for i := 0; i < nReduce; i++ {
 		task := ReduceTask{
@@ -214,11 +238,13 @@ func createReduceTasks(nReduce int) []ReduceTask {
 			InputFiles: []string{},
 		}
 		tasks = append(tasks, task)
+		slogger.Info("Created reduce task", "taskId", task.Id)
 	}
 	return tasks
 }
 
 func createMapTasks(files []string, nReduce int) []MapTask {
+	slogger.Info("Creating map tasks", "nReduce", nReduce, "files", files)
 	tasks := []MapTask{}
 	for _, file := range files {
 		chunks := createChunks(file)
@@ -229,6 +255,7 @@ func createMapTasks(files []string, nReduce int) []MapTask {
 				NReduce: nReduce,
 			}
 			tasks = append(tasks, task)
+			slogger.Info("Created map task", "taskId", task.Id, "file", file)
 		}
 	}
 	return tasks
