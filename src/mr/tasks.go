@@ -16,6 +16,12 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	ErrProcessingMapTask    = "map tasks are being processed"
+	ErrProcessingReduceTask = "reduce tasks are being processed"
+	MsgCompletedProcessing  = "all tasks are processed"
+)
+
 type Task interface {
 	Work()
 }
@@ -39,10 +45,8 @@ func (m *MapTask) Work() {
 	m.Out.Id = m.Id
 	sortedOutputLines := make([]utils.StringHeap, m.NReduce)
 
-	var intermediateKV []KeyValue
 	for _, line := range lines {
 		kvs := m.MapF(m.Filename, line)
-		intermediateKV = append(intermediateKV, kvs...)
 		for _, kv := range kvs {
 			i := ihash(kv.Key) % m.NReduce
 			line := fmt.Sprintf("%v %v\n", kv.Key, kv.Value)
@@ -87,8 +91,9 @@ type ReduceTask struct {
 
 func (r *ReduceTask) Work() {
 	scanners := []*bufio.Scanner{}
-	r.Out = uuid.NewString()
-	output, err := os.Create(r.Out)
+	fname := uuid.NewString()
+	output, err := os.Create(fname)
+	r.Out = output.Name()
 	if err != nil {
 		log.Fatalln("creating reduce output file: ", err)
 	}
