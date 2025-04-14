@@ -32,35 +32,42 @@ func Worker(mapf func(string, string) []KeyValue,
 	gob.Register(&MapTask{})
 	gob.Register(&ReduceTask{})
 	slogger = logger.GetLogger("worker").Sugar()
+	slogger.Info("Worker started")
 	for {
 		var task Task
 		var ok bool
+		slogger.Info("Requesting task from coordinator")
 		if !call("Coordinator.GetTask", "", &task) {
-			slogger.Fatalln("error getting task")
+			slogger.Fatal("Error getting task from coordinator")
 		}
 		switch v := task.(type) {
 		case *MapTask:
+			slogger.Infof("Received map task: %d", v.Id)
 			v.MapF = mapf
 			v.Work()
-			slogger.Infof("got map task: %d", v.Id)
+			slogger.Infof("Completed map task: %d", v.Id)
 			if !call("Coordinator.MapTaskDone", v.Out, &ok) {
-				slogger.Warnf("failed to notify map task completion for task %d", v.Id)
+				slogger.Warnf("Failed to notify map task completion for task %d", v.Id)
+			} else {
+				slogger.Infof("Successfully notified map task completion for task %d", v.Id)
 			}
 		case *ReduceTask:
+			slogger.Infof("Received reduce task: %d", v.Id)
 			v.RedF = reducef
 			v.Work()
-			slogger.Infof("got reduce task: %d", v.Id)
+			slogger.Infof("Completed reduce task: %d", v.Id)
 			if !call("Coordinator.ReduceTaskDone", v, &ok) {
-				slogger.Warnf("failed to notify reduce task completion for task %d", v.Id)
+				slogger.Warnf("Failed to notify reduce task completion for task %d", v.Id)
+			} else {
+				slogger.Infof("Successfully notified reduce task completion for task %d", v.Id)
 			}
 		default:
-			slogger.Warnf("received invalid task type: %v", task)
+			slogger.Warnf("Received invalid task type: %v", task)
 		}
 		if !ok {
-			slogger.Warn("unable to mark task done")
+			slogger.Warn("Unable to mark task as done")
 		}
 	}
-
 }
 
 // example function to show how to make an RPC call to the coordinator.

@@ -4,6 +4,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"6.5840/utils/logger"
+	"go.uber.org/zap"
 
 	"github.com/google/uuid"
 )
@@ -38,17 +40,24 @@ type Coordinator struct {
 	sync.Mutex
 }
 
-var slogger = logger.GetLogger("coordinator").Sugar()
+var slogger *zap.SugaredLogger
+
+func init() {
+	if err := logger.Initialize(); err != nil {
+		log.Fatalf("\ninitalzing logger: %s", err)
+	}
+	slogger = logger.GetLogger("coordinator").Sugar()
+}
 
 func (c *Coordinator) CleanUp() error {
 	slogger.Info("Starting cleanup of output files")
 	for _, group := range c.mapTasksOutput {
 		dir := filepath.Dir(group[0])
-		fmt.Printf("Deleting directory: %s\n", dir)
+		slogger.Info("Deleting directory: %s\n", dir)
 
 		err := os.RemoveAll(dir)
 		if err != nil {
-			fmt.Printf("Error deleting %s: %v\n", dir, err)
+			slogger.Warnf("Error deleting %s: %v\n", dir, err)
 		}
 	}
 	outfiles := c.redueTasksOutput

@@ -20,6 +20,9 @@ var (
 	defaultLogToFile    = false
 	defaultLogToConsole = true
 	defaultLogLevel     = "info"
+
+	initialized     bool
+	initializeMutex sync.Mutex
 )
 
 type Config struct {
@@ -29,19 +32,41 @@ type Config struct {
 	LogLevel     string
 }
 
+var config Config
+
 func Initialize() error {
+	initializeMutex.Lock()
+	defer initializeMutex.Unlock()
+
+	if initialized {
+		return nil
+	}
+
 	// Load .env file
-	if err := godotenv.Load(); err != nil {
-		return fmt.Errorf("error loading .env file: %w", err)
+	envPaths := []string{".env", "../.env", "../../.env"}
+	var loaded bool
+
+	for _, path := range envPaths {
+		if err := godotenv.Load(path); err == nil {
+			loaded = true
+			break
+		}
+	}
+
+	if !loaded {
+		fmt.Println("Warning: Could not find .env file, using default values")
 	}
 
 	// Ensure the logs directory exists
-	config := loadConfig()
+	config = loadConfig()
+
 	if config.LogToFile {
 		if err := os.MkdirAll(config.LogDir, 0755); err != nil {
 			return fmt.Errorf("error creating log directory: %w", err)
 		}
 	}
+
+	initialized = true
 	return nil
 }
 
@@ -56,6 +81,18 @@ func loadConfig() Config {
 
 // GetLogger returns a logger for the specified package
 func GetLogger(packageName string) *zap.Logger {
+	if !initialized {
+		if err := Initialize(); err != nil {
+			fmt.Printf("Error initializing logger: %v, using default configuration\n", err)
+			config = Config{
+				LogDir:       defaultLogDir,
+				LogToFile:    defaultLogToFile,
+				LogToConsole: true,
+				LogLevel:     defaultLogLevel,
+			}
+			initialized = true
+		}
+	}
 	loggerMutex.RLock()
 	logger, exists := loggers[packageName]
 	loggerMutex.RUnlock()
@@ -72,11 +109,8 @@ func GetLogger(packageName string) *zap.Logger {
 
 // createLogger creates a new logger for a specific package
 func createLogger(packageName string) *zap.Logger {
-	config := loadConfig()
-
 	// Parse log level
 	level := getLogLevel(config.LogLevel)
-
 	// Setup encoder
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.TimeKey = "timestamp"
@@ -92,6 +126,8 @@ func createLogger(packageName string) *zap.Logger {
 		if err == nil {
 			fileEncoder := zapcore.NewJSONEncoder(encoderConfig)
 			cores = append(cores, zapcore.NewCore(fileEncoder, zapcore.AddSync(writer), level))
+		} else {
+			fmt.Printf("Error opening log file %s: %v\n", logFile, err)
 		}
 	}
 
