@@ -52,12 +52,9 @@ func init() {
 func (c *Coordinator) CleanUp() error {
 	slogger.Info("Starting cleanup of output files")
 	for _, group := range c.mapTasksOutput {
-		dir := filepath.Dir(group[0])
-		slogger.Info("Deleting directory: %s\n", dir)
-
-		err := os.RemoveAll(dir)
-		if err != nil {
-			slogger.Warnf("Error deleting %s: %v\n", dir, err)
+		for _, file := range group {
+			err := os.Remove(file)
+			slogger.Warnf("unable to delete file: %s, err: %s", file, err)
 		}
 	}
 	outfiles := c.redueTasksOutput
@@ -156,7 +153,7 @@ func (c *Coordinator) GetTask(workerId string, task *Task) error {
 	c.Lock()
 	defer c.Unlock()
 
-	slogger.Info("Worker requested task", "workerId", workerId)
+	slogger.Info("Worker requested task", "workerId:", workerId)
 	if !c.mapTasksDone {
 		if len(c.mapTasks) != 0 {
 			t := c.mapTasks[0]
@@ -167,6 +164,7 @@ func (c *Coordinator) GetTask(workerId string, task *Task) error {
 			slogger.Info("Assigned map task to worker", "workerId", workerId, "taskId", t.Id)
 			return nil
 		}
+		slogger.Info("map tasks in process", "map tasks ", c.mapProcessing)
 		slogger.Warn("No map tasks available for worker", "workerId", workerId)
 		return errors.New(ErrProcessingMapTask)
 	}
@@ -239,7 +237,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 }
 
 func createReduceTasks(nReduce int) []ReduceTask {
-	slogger.Info("Creating reduce tasks", "nReduce", nReduce)
+	slogger.Info("Creating reduce tasks:", "nReduce", nReduce)
 	tasks := []ReduceTask{}
 	for i := 0; i < nReduce; i++ {
 		task := ReduceTask{
@@ -256,16 +254,22 @@ func createMapTasks(files []string, nReduce int) []MapTask {
 	slogger.Info("Creating map tasks", "nReduce", nReduce, "files", files)
 	tasks := []MapTask{}
 	for _, file := range files {
-		chunks := createChunks(file)
-		for _, chunk := range chunks {
-			task := MapTask{
-				Id:      uuid.NewString(),
-				Chunk:   chunk,
-				NReduce: nReduce,
-			}
-			tasks = append(tasks, task)
-			slogger.Info("Created map task", "taskId", task.Id, "file", file)
+		fi, err := os.Stat(file)
+		if err != nil {
+			log.Fatal("reading file stat:", err)
 		}
+		size := fi.Size()
+		task := MapTask{
+			Id: uuid.NewString(),
+			Chunk: Chunk{
+				Filename: file,
+				Offset:   0,
+				Size:     size,
+			},
+			NReduce: nReduce,
+		}
+		tasks = append(tasks, task)
+		slogger.Info("Created map task", "taskId:", task.Id, "file:", file)
 	}
 	return tasks
 }

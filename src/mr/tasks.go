@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"6.5840/utils"
+	"6.5840/utils/logger"
 	"github.com/emirpasic/gods/queues/priorityqueue"
 	"github.com/google/uuid"
 )
@@ -40,38 +41,43 @@ type MapTaskOut struct {
 }
 
 func (m *MapTask) Work() {
-	lines := readChunk(m.Chunk)
+	logger := logger.GetLogger("worker").Sugar()
+	logger.Infof("Starting MapTask Work: %s", m.Id)
+
+	content, err := os.ReadFile(m.Filename)
+	if err != nil {
+		logger.Fatalf("Error reading file: %s: %s", m.Filename, err)
+	}
+	logger.Infof("File read successfully: %s", m.Filename)
+
 	m.Out = MapTaskOut{}
 	m.Out.Id = m.Id
 	sortedOutputLines := make([]utils.StringHeap, m.NReduce)
 
-	for _, line := range lines {
-		kvs := m.MapF(m.Filename, line)
-		for _, kv := range kvs {
-			i := ihash(kv.Key) % m.NReduce
-			line := fmt.Sprintf("%v %v\n", kv.Key, kv.Value)
-			sortedOutputLines[i].PushString(line)
-		}
+	kvs := m.MapF(m.Filename, string(content))
+	logger.Infof("Map function executed successfully for task: %s", m.Id)
+
+	for _, kv := range kvs {
+		i := ihash(kv.Key) % m.NReduce
+		line := fmt.Sprintf("%v %v\n", kv.Key, kv.Value)
+		sortedOutputLines[i].PushString(line)
 	}
+	logger.Infof("Key-value pairs sorted into %d reducers for task: %s", m.NReduce, m.Id)
 
 	// create NReduce files to store output of map func
-	dirName := uuid.NewString()
-	err := os.Mkdir(dirName, 0755)
-	if err != nil {
-		log.Fatalln("error creating directory:", err)
-	}
-
+	taskId := m.Id
 	outFiles := []*os.File{}
 
 	for i := range m.NReduce {
 		filename := "mr-out-" + strconv.Itoa(i)
-		f, err := os.Create(dirName + "/" + filename)
-		m.Out.Files = append(m.Out.Files, f.Name())
+		f, err := os.Create(taskId + "-" + filename)
 		if err != nil {
-			log.Fatalln("error creating file:", err)
+			logger.Fatalf("Error creating file: %s", err)
 		}
+		m.Out.Files = append(m.Out.Files, f.Name())
 		defer f.Close()
 		outFiles = append(outFiles, f)
+		logger.Infof("Output file created: %s", f.Name())
 	}
 
 	for i, lines := range sortedOutputLines {
@@ -79,7 +85,10 @@ func (m *MapTask) Work() {
 		for j := 0; j < n; j++ {
 			fmt.Fprint(outFiles[i], lines.PopString())
 		}
+		logger.Infof("Written sorted lines to file: %s", outFiles[i].Name())
 	}
+
+	logger.Infof("MapTask Work completed: %s", m.Id)
 }
 
 type ReduceTask struct {
