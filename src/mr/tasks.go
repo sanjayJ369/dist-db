@@ -14,7 +14,6 @@ import (
 	"6.5840/utils"
 	"6.5840/utils/logger"
 	"github.com/emirpasic/gods/queues/priorityqueue"
-	"github.com/google/uuid"
 )
 
 const (
@@ -26,6 +25,10 @@ const (
 type Task interface {
 	Work()
 }
+
+type PleaseExit struct{}
+
+func (p *PleaseExit) Work() {}
 
 type MapTask struct {
 	Id      string     // task ID
@@ -100,8 +103,7 @@ type ReduceTask struct {
 
 func (r *ReduceTask) Work() {
 	scanners := []*bufio.Scanner{}
-	fname := uuid.NewString()
-	output, err := os.Create(fname)
+	output, err := os.Create(OUTPUT_FILE_PREFIX + r.Id)
 	r.Out = output.Name()
 	if err != nil {
 		log.Fatalln("creating reduce output file: ", err)

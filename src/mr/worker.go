@@ -4,10 +4,10 @@ import (
 	"encoding/gob"
 	"fmt"
 	"hash/fnv"
-	"log"
 	"net/rpc"
 
 	"6.5840/utils/logger"
+	"github.com/google/uuid"
 )
 
 // Map functions return a slice of KeyValue.
@@ -24,6 +24,8 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+var wlogger = logger.GetLogger("worker").Sugar()
+
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
@@ -31,41 +33,45 @@ func Worker(mapf func(string, string) []KeyValue,
 	// CallExample()
 	gob.Register(&MapTask{})
 	gob.Register(&ReduceTask{})
-	slogger = logger.GetLogger("worker").Sugar()
-	slogger.Info("Worker started")
+	gob.Register(&PleaseExit{})
+
+	wlogger.Info("Worker started")
+	id := uuid.NewString()
 	for {
 		var task Task
 		var ok bool
-		slogger.Info("Requesting task from coordinator")
-		if !call("Coordinator.GetTask", "", &task) {
-			slogger.Fatal("Error getting task from coordinator")
+		wlogger.Info("Requesting task from coordinator")
+		if !call("Coordinator.GetTask", id, &task) {
+			wlogger.Warn("Error getting task from coordinator")
 		}
 		switch v := task.(type) {
 		case *MapTask:
-			slogger.Infof("Received map task: %d", v.Id)
+			wlogger.Infof("Received map task: %d", v.Id)
 			v.MapF = mapf
 			v.Work()
-			slogger.Infof("Completed map task: %d", v.Id)
+			wlogger.Infof("Completed map task: %d", v.Id)
 			if !call("Coordinator.MapTaskDone", v.Out, &ok) {
-				slogger.Warnf("Failed to notify map task completion for task %d", v.Id)
+				wlogger.Warnf("Failed to notify map task completion for task %d", v.Id)
 			} else {
-				slogger.Infof("Successfully notified map task completion for task %d", v.Id)
+				wlogger.Infof("Successfully notified map task completion for task %d", v.Id)
 			}
 		case *ReduceTask:
-			slogger.Infof("Received reduce task: %d", v.Id)
+			wlogger.Infof("Received reduce task: %d", v.Id)
 			v.RedF = reducef
 			v.Work()
-			slogger.Infof("Completed reduce task: %d", v.Id)
+			wlogger.Infof("Completed reduce task: %d", v.Id)
 			if !call("Coordinator.ReduceTaskDone", v, &ok) {
-				slogger.Warnf("Failed to notify reduce task completion for task %d", v.Id)
+				wlogger.Warnf("Failed to notify reduce task completion for task %d", v.Id)
 			} else {
-				slogger.Infof("Successfully notified reduce task completion for task %d", v.Id)
+				wlogger.Infof("Successfully notified reduce task completion for task %d", v.Id)
 			}
+		case *PleaseExit:
+			wlogger.Warn("Exit signal received, exiting worker ", id)
 		default:
-			slogger.Warnf("Received invalid task type: %v", task)
+			wlogger.Warnf("Received invalid task type: %v", task)
 		}
 		if !ok {
-			slogger.Warn("Unable to mark task as done")
+			wlogger.Warn("Unable to mark task as done")
 		}
 	}
 }
@@ -105,15 +111,10 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
-		log.Fatal("dialing:", err)
+		wlogger.Fatal("dialing:", err)
 	}
 	defer c.Close()
 
 	err = c.Call(rpcname, args, reply)
-	if err == nil {
-		return true
-	}
-
-	fmt.Println(err)
-	return false
+	return err == nil
 }
